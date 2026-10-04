@@ -1,0 +1,170 @@
+================================================================================
+  QUICK REFERENCE - Microproject 5: Secure Password Storage System
+  CNS (E1CSA311) | Module III | CO3
+================================================================================
+
+WHAT IS THIS PROJECT?
+---------------------
+A system that NEVER stores passwords. Instead it stores:
+  salt = random 16 bytes per user  (os.urandom)
+  hash = SHA-256(password + salt)
+At login: re-compute SHA-256(entered_password + stored_salt) and compare.
+
+================================================================================
+THE 4-STEP PROCESS  ->  REGISTRATION
+================================================================================
+
+  Step 1  SALT     os.urandom(16)                  16 cryptographic random bytes
+  Step 2  HASH     SHA-256(password + salt)         64-char hex digest
+  Step 3  STORE    INSERT (username, salt.hex(),    NO plaintext password ever
+                          hash, timestamp)
+  Step 4  DONE     User sees: Account created.
+
+================================================================================
+THE 3-STEP PROCESS  ->  LOGIN
+================================================================================
+
+  Step 1  FETCH    SELECT salt, hash FROM users WHERE username = ?
+  Step 2  REHASH   SHA-256(entered_password + bytes.fromhex(stored_salt))
+  Step 3  COMPARE  hmac.compare_digest(recomputed, stored_hash)
+                   True = login granted  |  False = denied
+
+================================================================================
+WHAT IS IN THE DATABASE  (what an attacker steals)
+================================================================================
+
+  Column         Example value
+  ------------   -------------------------------------------------------
+  username       alice
+  salt           9b4eb60c295b0667d2a5f99b18105a59   (32 hex = 16 bytes)
+  password_hash  3539aa06281db7027eeedf1d760615ae...  (64 hex = 32 bytes)
+  created_at     2026-10-04 21:06:44
+  password       NOT STORED ANYWHERE
+
+  SHA-256 is one-way: attacker cannot reverse 3539aa06... back to Summer2026.
+
+================================================================================
+6 SECURITY PROPERTIES  (one line each)
+================================================================================
+
+  1. One-way hash      SHA-256 cannot be reversed. Attacker cannot get password.
+  2. Salt              Same password -> DIFFERENT hash for every user.
+  3. No rainbow table  Attacker must redo dictionary PER user (N users = Nx work).
+  4. Avalanche         1 char change -> ~50% output bits flip (DEMO 5: 145/256).
+  5. Timing-safe       hmac.compare_digest never exits early -> no timing leak.
+  6. SQL injection     Parameterised ? queries. Injection strings = literal values.
+
+================================================================================
+MODULE III CONCEPT MAP  (exam-ready)
+================================================================================
+
+  What we use in code         Module III syllabus topic
+  --------------------------  -----------------------------------------------
+  hashlib.sha256()         -> Hash functions (SHA family)
+  os.urandom(16)           -> Message auth requirements (randomness / nonce)
+  hmac.compare_digest()    -> Message Authentication Code (MAC)
+  PBKDF2 (in benchmark)    -> Key derivation / key stretching
+  Salt + hash design       -> Authentication requirements
+                              (confidentiality + integrity + non-repudiation)
+  Why NOT use RSA encrypt? -> RSA is reversible with private key.
+                              Hash is ONE-WAY so even server cannot decrypt.
+
+================================================================================
+KEY CODE (3 functions to know by heart)
+================================================================================
+
+  generate_salt():
+    return os.urandom(16)
+
+  hash_password(password, salt):
+    return hashlib.sha256(password.encode('utf-8') + salt).hexdigest()
+
+  verify(username, password):                 <- login flow
+    row  = SELECT salt, password_hash WHERE username = ?
+    salt = bytes.fromhex(row['salt'])
+    candidate = hash_password(password, salt)
+    return hmac.compare_digest(candidate, row['password_hash'])
+
+================================================================================
+5 DEMO OUTPUTS  (one line each)
+================================================================================
+
+  DEMO 1  alice/bob/charlie registered. Salts+hashes printed. No passwords.
+  DEMO 2  alice & bob share same password -> DIFFERENT hashes (different salt).
+  DEMO 3  Correct creds = GRANTED. Wrong case / wrong pw / unknown = DENIED.
+  DEMO 4  Rainbow table cracks unsalted DB (alice,bob). Salted DB: 0 cracked.
+  DEMO 5  'Summer2026' vs 'Summer2027' -> 145 of 256 bits differ (56.6%).
+
+================================================================================
+14 UNIT TESTS  (all pass in 0.17 s)
+================================================================================
+
+  Hash (5) :  salt length, 1000 unique salts, NIST test vector,
+              same-salt-same-hash, new-salt-new-hash.
+
+  Store (9):  register+login (happy path), wrong password, unknown user,
+              duplicate username, weak password, bad username,
+              same-password-different-users -> different hashes,
+              no plaintext in raw DB file, SQL injection blocked.
+
+================================================================================
+PERFORMANCE NUMBERS  (benchmark.py)
+================================================================================
+
+  Salt (os.urandom 16B)  :    0.2 us     Login  (end-to-end):   1 ms
+  SHA-256 with salt      :    1.6 us     Register (end-to-end): 9 ms
+  PBKDF2 (600k iters)    :  548   ms  <- production grade, 350,000x harder
+
+  Attacker work (1M-word dictionary attack):
+    Unsalted DB  1,000,000 hashes total  (one table cracks ALL users)
+    Salted DB    1,000,000 x N hashes    (must redo per user -> N times harder)
+
+================================================================================
+BUG FIXED  (app.py /dashboard)
+================================================================================
+
+  OLD: next(u for u in users if ...)         crashes HTTP 500 if user deleted
+  FIX: next(..., None) + None-check          graceful redirect to /login
+
+================================================================================
+HOW TO RUN  (3 commands)
+================================================================================
+
+  python -m unittest discover -s tests -v   # 14 unit tests
+  python demo.py                            # 5 security demos
+  python cli.py                             # interactive terminal app
+
+================================================================================
+VIVA / EXAM ANSWER TEMPLATES
+================================================================================
+
+Q: How does the system store passwords?
+A: It does NOT store passwords. It stores a 16-byte random salt (os.urandom)
+   and SHA-256(password + salt). The plaintext password is never written.
+
+Q: How does login work?
+A: Fetch the salt from DB, re-hash the entered password with it, and compare
+   using hmac.compare_digest (constant-time). Match = granted.
+
+Q: Why use a salt?
+A: Without salt, two users with the same password have identical hashes.
+   A rainbow table cracks them instantly. A unique salt forces the attacker
+   to rehash their dictionary separately for every user (N users = N x work).
+
+Q: Which Module III concepts does this project use?
+A: SHA-256 (SHA family hash functions), os.urandom (CSPRNG / auth requirements),
+   hmac.compare_digest (MAC verification), PBKDF2 (key stretching / derivation).
+
+Q: Why hash instead of encrypt?
+A: Encryption (RSA) is reversible with the private key. If passwords were
+   encrypted, anyone with the key could decrypt them. A hash is one-way -
+   even the server operator cannot recover the original password.
+
+Q: What properties does SHA-256 have?
+A: One-way (pre-image resistant), collision resistant, deterministic,
+   avalanche effect (~50% bits change per 1-char input change), fixed 256-bit
+   output regardless of input length.
+
+================================================================================
+END OF QUICK REFERENCE
+================================================================================

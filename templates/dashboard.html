@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Welcome, {{ record.username }}</h1>
+  <p class="flash success">Your password was verified without ever being stored.</p>
+  <p>This is everything the system holds about your credentials:</p>
+  <dl>
+    <dt>Salt (16 random bytes)</dt><dd><code>{{ record.salt }}</code></dd>
+    <dt>SHA-256(password + salt)</dt><dd><code>{{ record.password_hash }}</code></dd>
+    <dt>Account created</dt><dd>{{ record.created_at }}</dd>
+  </dl>
+</section>
+{% endblock %}

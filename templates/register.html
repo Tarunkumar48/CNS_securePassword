@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Register{% endblock %}
+{% block content %}
+<section class="card narrow">
+  <h1>Create an account</h1>
+  <form method="post" autocomplete="off">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    <label>Username
+      <input name="username" required minlength="3" maxlength="30"
+             value="{{ request.form.get('username', '') }}"></label>
+    <label>Password
+      <input name="password" type="password" required minlength="8"></label>
+    <label>Confirm password
+      <input name="confirm" type="password" required minlength="8"></label>
+    <p class="muted">At least 8 characters, with one letter and one digit.</p>
+    <button class="button" type="submit">Register</button>
+  </form>
+</section>
+{% endblock %}

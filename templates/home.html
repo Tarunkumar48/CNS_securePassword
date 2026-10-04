@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="card">
+  <h1>Passwords are never stored here</h1>
+  <p>Each account keeps only a random 16-byte salt and the SHA-256 hash of
+     the password combined with that salt. Even if the database is stolen,
+     the original passwords are not in it.</p>
+  <p class="actions">
+    <a class="button" href="{{ url_for('register') }}">Create an account</a>
+    <a class="button secondary" href="{{ url_for('login') }}">Log in</a>
+  </p>
+</section>
+
+<section class="steps">
+  <div class="card"><h2>1. Salt</h2>
+    <p><code>os.urandom(16)</code> produces a fresh random salt for every password.</p></div>
+  <div class="card"><h2>2. Hash</h2>
+    <p><code>SHA-256(password + salt)</code> is computed with <code>hashlib</code>.</p></div>
+  <div class="card"><h2>3. Store</h2>
+    <p>Only the salt and the hash go into the SQLite database.</p></div>
+  <div class="card"><h2>4. Verify</h2>
+    <p>At login the entered password is re-hashed with the stored salt and compared.</p></div>
+</section>
+
+<p class="muted">Accounts registered so far: <strong>{{ count }}</strong></p>
+{% endblock %}

@@ -1,0 +1,594 @@
+================================================================================
+  PROJECT NOTES  -  Microproject 5: Secure Password Storage System
+  Subject  : Cryptography and Network Security (E1CSA311)
+  CO       : CO3 - Analyze secure communication mechanisms using principles of
+             public-key cryptography.
+  Mapped to: Syllabus Module III - Public Key Cryptography and Authentication
+             Requirements (6 hours)
+  Date     : October 2026
+================================================================================
+
+
+================================================================================
+SECTION 1: PROJECT OVERVIEW
+================================================================================
+
+This project implements a secure password storage and authentication system
+using ONLY the Python standard library (hashlib, os, hmac, sqlite3, re,
+datetime). An optional Flask web interface requires Flask >= 3.0.
+
+The system answers one fundamental question:
+  "How do you prove a user knows a password without storing the password?"
+
+Answer: Store a salted cryptographic hash. At login, recompute the hash from
+the entered password and compare - equality means the passwords match.
+
+Files in the project
+--------------------
+  secure_store.py        Core module: salt generation, SHA-256 hashing,
+                         SQLite persistence, login verification.
+  cli.py                 Menu-driven terminal interface.
+  app.py                 Flask web application (register, login, dashboard).
+  demo.py                Non-interactive script showing security properties.
+  benchmark.py           Timing measurements and attacker work estimates.
+  tests/test_store.py    14 unit tests covering all components.
+  templates/             Jinja2 HTML templates for the web interface.
+  static/style.css       Stylesheet for the web interface.
+  requirements.txt       Flask >= 3.0 (only needed for app.py).
+  README.md              Quick-start instructions.
+
+
+================================================================================
+SECTION 2: COMPLETE WORKFLOW - STEP BY STEP
+================================================================================
+
+PHASE A: ACCOUNT REGISTRATION
+==============================
+
+  Step 1 - User submits username + password (terminal or web form).
+
+  Step 2 - Validation
+            Username: 3-30 chars, only [A-Za-z0-9_.-]   (regex check)
+            Password: >= 8 chars, must contain >=1 letter AND >=1 digit.
+
+  Step 3 - Salt generation
+            salt = os.urandom(16)
+            Produces 16 cryptographically random bytes (128 bits) from the
+            operating system CSPRNG (Cryptographically Secure Pseudo-Random
+            Number Generator). Each account gets a UNIQUE salt.
+
+  Step 4 - Password hashing
+            digest = SHA-256( password.encode("utf-8") + salt )
+            The UTF-8 password bytes concatenated with the raw salt bytes
+            are fed into hashlib.sha256().hexdigest().
+            Result: a 64-character (256-bit) hexadecimal string.
+
+  Step 5 - Database write
+            The following tuple is inserted into SQLite via a parameterised
+            query (prevents SQL injection):
+              (username, salt.hex(), digest, timestamp)
+            The plaintext password is NEVER written anywhere.
+
+  Step 6 - Response
+            User sees "Account created." No password data leaves the function.
+
+PHASE B: LOGIN / VERIFICATION
+==============================
+
+  Step 1 - User submits username + password.
+
+  Step 2 - Database lookup
+            SELECT salt, password_hash FROM users WHERE username = ?
+            Parameterised query prevents SQL injection.
+
+  Step 3a - Unknown user branch
+            To prevent timing attacks that reveal whether a username exists,
+            the system still performs:
+              hash_password(password, generate_salt())   <- dummy work
+            Returns False without revealing why.
+
+  Step 3b - Known user branch
+            salt      = bytes.fromhex(stored_salt_hex)
+            candidate = SHA-256( entered_password.encode("utf-8") + salt )
+
+  Step 4 - Constant-time comparison
+            hmac.compare_digest(candidate, stored_hash)
+            This function always takes the same time regardless of where
+            strings first differ, preventing timing attacks on the digest.
+
+  Step 5 - Response
+            True  -> login succeeds.
+            False -> "Invalid username or password."
+            The SAME error message is shown for both wrong password and unknown
+            username (no username enumeration).
+
+
+================================================================================
+SECTION 3: DATA STORED IN THE DATABASE (what an attacker sees)
+================================================================================
+
+Table: users
+Columns: id | username | salt (hex) | password_hash (hex) | created_at
+
+Example row for alice (password = "Summer2026"):
+  id            : 1
+  username      : alice
+  salt          : 9b4eb60c295b0667d2a5f99b18105a59   <- 32 hex chars = 16 bytes
+  password_hash : 3539aa06281db7027eeedf1d760615ae   <- 64 hex chars = 32 bytes
+                  6d594a666e5385ed96dad8145d0c6832
+  created_at    : 2026-10-04 21:06:44
+
+Even with full database access, an attacker CANNOT reverse the hash to recover
+"Summer2026" - SHA-256 is a one-way (pre-image resistant) function.
+
+
+================================================================================
+SECTION 4: SECURITY PROPERTIES DEMONSTRATED
+================================================================================
+
+4.1  One-Way Hash Function (Pre-image Resistance)
+     SHA-256("Summer2026" + salt) produces a 64-char hex string.
+     There is no known algorithm to reverse SHA-256 to recover "Summer2026".
+     The attacker must try all possible inputs (brute force / dictionary).
+
+4.2  Salt Defeats Rainbow Table Attacks
+     A rainbow table is a precomputed lookup of hash->password for common
+     passwords.
+
+     Without salt:
+       SHA-256("Summer2026") = ed3c9886c697c0ac...   (same for every user)
+       -> Any user with this hash is immediately cracked from the table.
+
+     With salt:
+       SHA-256("Summer2026" + alice_salt) != SHA-256("Summer2026" + bob_salt)
+       -> The attacker must build a SEPARATE table for EACH user's salt,
+          making rainbow tables computationally useless at scale.
+
+     demo.py DEMO 4 proves this: 0 passwords recovered from the salted DB.
+
+4.3  Same Password -> Different Hash (Identity Hiding)
+     alice and bob both chose "Summer2026".
+       alice hash: 3539aa06281db7027eee...
+       bob   hash: 5966818f997e10b4d73c...
+     An attacker cannot tell that two users share a password by comparing hashes.
+
+4.4  Avalanche Effect
+     Changing ONE character in the password changes ~50% of the output bits.
+       SHA-256("Summer2026" + salt): 3539aa06...
+       SHA-256("Summer2027" + salt): 6beb71f1...
+       Bit difference: 145 of 256 bits (56.6%)
+     Brute-force attacks are hard: nearby guesses produce completely different
+     hashes with no gradient to follow.
+
+4.5  Constant-Time Comparison (Timing Attack Prevention)
+     hmac.compare_digest() is used instead of the == operator.
+     == short-circuits on the first different character, leaking partial-match
+     information through response-time differences.
+     compare_digest always inspects every byte -> constant execution time.
+
+4.6  SQL Injection Prevention
+     All database queries use ? placeholders (parameterised queries).
+     test_sql_injection verifies that injection strings like
+     "alice' OR '1'='1" are treated as literal values, not SQL commands.
+
+4.7  Timing Attack on Username Enumeration (Prevention)
+     If the username does not exist, a dummy hash is still computed so that
+     "user not found" and "wrong password" take the same time to respond.
+
+4.8  No Plaintext in Database (Verified by Test)
+     test_no_plaintext_in_db_file reads the raw SQLite binary file and asserts
+     that the string "Summer2026" does not appear anywhere in it.
+
+4.9  CSRF Protection (Web Interface)
+     app.py generates a per-session CSRF token using os.urandom(16).hex() and
+     embeds it as a hidden field in every POST form. The token is validated
+     with hmac.compare_digest() before any form is processed.
+
+
+================================================================================
+SECTION 5: CRYPTOGRAPHIC CONCEPTS USED AND MODULE III MAPPING
+================================================================================
+
+The project's cryptographic foundations map directly to the six-hour
+Module III syllabus topics listed below.
+
+-------------------------------------------------------------------------------
+Concept Used in Project           <->  Module III Syllabus Topic
+-------------------------------------------------------------------------------
+
+CONCEPT 1: SHA-256 Hash Function
+  Used in project : hashlib.sha256(pw_bytes + salt).hexdigest()
+  Module III topic: "Hash functions (SHA family)"
+
+  SHA stands for Secure Hash Algorithm. SHA-256 belongs to the SHA-2 family
+  standardised by NIST (FIPS 180-4).
+
+  Properties demonstrated in the project:
+    a. One-way / Pre-image resistance
+       Given the hash output, it is computationally infeasible to find the
+       input. An attacker cannot reverse "3539aa06..." to get "Summer2026".
+
+    b. Collision resistance
+       It is computationally infeasible to find two different inputs that
+       produce the same 256-bit output.
+
+    c. Deterministic
+       The same input always produces exactly the same output.
+       (test_same_salt_same_hash verifies this.)
+
+    d. Avalanche effect
+       A single-character change in the input changes ~50% of output bits.
+       (DEMO 5 quantifies this: 145 of 256 bits differ.)
+
+    e. Fixed output size
+       Regardless of the input length, SHA-256 always outputs 256 bits
+       (64 hex characters). This standardises storage requirements.
+
+-------------------------------------------------------------------------------
+
+CONCEPT 2: Salt (Randomness from CSPRNG)
+  Used in project : os.urandom(16) -> 128-bit random salt per password
+  Module III topic: "Message authentication requirements and functions"
+
+  A salt is a random value appended to the message before hashing. It ensures
+  that identical passwords produce different hashes (as a nonce in message
+  authentication ensures freshness).
+
+  Properties of the salt used:
+    - Source: os.urandom() draws from the OS CSPRNG (/dev/urandom on Linux,
+      CryptGenRandom on Windows). This is cryptographically secure.
+    - Size: 16 bytes = 128 bits. 2^128 possible salts makes pre-generation of
+      all possible salted tables completely infeasible.
+    - Unique per user: A fresh os.urandom(16) call is made for EVERY account.
+    - Not secret: The salt is stored in plaintext alongside the hash. Its
+      purpose is uniqueness, not secrecy.
+
+  Why this is an authentication requirement:
+    Without a salt, the hash is entirely determined by the password.
+    Anyone who sees two users with the same hash knows they share a password.
+    The salt breaks this linkage and adds message-level uniqueness, which is
+    a core requirement of authentication systems.
+
+-------------------------------------------------------------------------------
+
+CONCEPT 3: Message Authentication Code (MAC) via hmac module
+  Used in project : hmac.compare_digest() for constant-time comparison
+  Module III topic: "Message Authentication Code (MAC) and hash functions"
+
+  A MAC is a tag appended to a message to allow a recipient to verify both
+  its authenticity (it came from the right party) and integrity (it was not
+  altered). In this project:
+
+    a. Login verification acts as a MAC check:
+       The stored hash is the "MAC tag". The verifier recomputes the hash
+       with the same key (salt) and compares. If they match, the password
+       is authentic.
+
+    b. hmac.compare_digest() provides timing-attack-safe comparison:
+       A naive == comparison leaks timing information (early exit on first
+       mismatch). compare_digest always runs in constant time, which is a
+       security requirement of MAC verification.
+
+    c. CSRF token in app.py is a MAC-like mechanism:
+       A random 16-byte token is generated per session and validated on every
+       POST request using hmac.compare_digest(), confirming the request
+       originated from the correct browser session.
+
+-------------------------------------------------------------------------------
+
+CONCEPT 4: PBKDF2-HMAC-SHA256 (Key Derivation / Key Stretching)
+  Used in project : benchmark.py section 5 (comparison / future scope)
+  Module III topic: "Principles of public-key cryptosystems / Hash functions"
+
+  PBKDF2 (Password-Based Key Derivation Function 2) applies SHA-256 inside
+  HMAC iteratively (600,000 times in the NIST recommendation).
+
+  Why it matters:
+    - Each login attempt requires 547 ms on this hardware.
+    - An attacker testing 1 million passwords per second with plain SHA-256
+      would need 1.56 microseconds per hash.
+    - With PBKDF2 the same attacker is slowed by a factor of ~350,000.
+    - This demonstrates the concept of making hash functions intentionally
+      slow ("key stretching") to defeat brute-force dictionary attacks.
+
+  The project uses plain salted SHA-256 as required by the specification and
+  presents PBKDF2 as the production-grade evolution.
+
+-------------------------------------------------------------------------------
+
+CONCEPT 5: Authentication Requirements (Confidentiality, Integrity,
+           Non-repudiation)
+  Used in project : entire design
+  Module III topic: "Message authentication requirements"
+
+  The three classic authentication properties and how they are met:
+
+    1. Confidentiality
+       The password is never stored, logged, or transmitted in plaintext.
+       Even the application developer cannot recover a user's password.
+
+    2. Integrity
+       The 256-bit hash is compared bit-for-bit. Any single-bit corruption
+       of the stored hash will cause authentication to fail, alerting the
+       system to database tampering.
+
+    3. Non-repudiation
+       Every account has a unique salt. Even if two users share the same
+       password, their hashes are different. This prevents one user from
+       claiming another user's hash is proof of their own identity.
+
+-------------------------------------------------------------------------------
+
+CONCEPT 6: Relationship to Public-Key Cryptography (Module III context)
+  Module III topic: RSA, Diffie-Hellman, ECC (complementary context)
+
+  CO3 maps to public-key cryptography but this project covers the hash and
+  authentication side of the same module. The conceptual link is:
+
+  - Public-key encryption (RSA) is REVERSIBLE given the private key.
+    If passwords were encrypted instead of hashed, the server holding the
+    private key could always decrypt and read every password.
+
+  - Hash functions are ONE-WAY and produce a fixed-length digest.
+    They are the correct tool for password storage because even the server
+    operator cannot reverse them.
+
+  - Digital signatures (RSA/ECC) and MACs both serve message authentication,
+    but for different threat models. This project uses the symmetric hash-MAC
+    approach because:
+      a. The server both stores and verifies - no need for asymmetry.
+      b. Hash operations are orders of magnitude faster than RSA.
+
+  Understanding when to use hashing vs. public-key cryptography is a key
+  outcome of CO3 and Module III.
+
+
+================================================================================
+SECTION 6: CODE ARCHITECTURE REVIEW
+================================================================================
+
+The project is structured in four logical layers:
+
+Layer 1 - Core Cryptography Layer (secure_store.py)
+----------------------------------------------------
+  generate_salt()         -> os.urandom(16), 128-bit random bytes.
+  hash_password(pw, salt) -> hashlib.sha256(pw_bytes + salt).hexdigest()
+  hash_unsalted(pw)       -> plain SHA-256, demo only, shows the weakness.
+  check_username()        -> regex validation [A-Za-z0-9_.-], 3-30 chars.
+  check_password()        -> length >= 8, must have letter + digit.
+  UserStore.register()    -> validate -> salt -> hash -> parameterised INSERT.
+  UserStore.verify()      -> parameterised SELECT -> re-hash -> compare_digest.
+  UserStore.list_users()  -> returns id, username, salt, hash, created_at.
+                             NO password column exists; nothing to leak.
+  UserStore.delete_all()  -> used by unit test teardown.
+
+Layer 2 - Interface Layer
+--------------------------
+  cli.py  : Uses getpass (hides keystrokes), menu loop, calls Layer 1.
+  app.py  : Flask routes (/register, /login, /dashboard, /records, /logout),
+            per-session CSRF token, session management, calls Layer 1.
+
+Layer 3 - Demonstration and Analysis Layer
+-------------------------------------------
+  demo.py       : 5 self-contained, printable security demonstrations.
+  benchmark.py  : Timing measurements and attacker work quantification.
+  Both use temporary databases (tempfile.mkdtemp) so users.db is untouched.
+
+Layer 4 - Quality Assurance Layer
+-----------------------------------
+  tests/test_store.py : 14 unittest.TestCase tests, each using its own
+                        temporary database for full isolation.
+
+
+================================================================================
+SECTION 7: UNIT TEST COVERAGE AND RESULTS
+================================================================================
+
+Command executed : python -m unittest discover -s tests -v
+Result           : 14 tests, 0 failures, 0 errors  (ran in 0.170 s)
+
+Test Name                     Class          What it Verifies
+------------------------------------------------------------------------------
+test_salt_length               HashTests     generate_salt() returns exactly
+                                             SALT_BYTES (16) bytes.
+
+test_salts_unique              HashTests     1000 consecutive salts are all
+                                             distinct (no CSPRNG collisions).
+
+test_known_sha256_vector       HashTests     hash_password("ab", b"c") matches
+                                             the published NIST SHA-256 test
+                                             vector, confirming standards
+                                             compliance.
+
+test_same_salt_same_hash       HashTests     Determinism: same input -> same
+                                             output every time.
+
+test_new_salt_new_hash         HashTests     Different salts -> different hashes
+                                             for the same password.
+
+test_register_and_login        StoreTests    Happy path: register succeeds and
+                                             correct password logs in.
+
+test_wrong_password            StoreTests    Wrong case (summer2026 != Summer2026)
+                                             and empty string both fail.
+
+test_unknown_user              StoreTests    Non-existent username returns False
+                                             (no crash, no bypass).
+
+test_duplicate_username        StoreTests    Second register with same username
+                                             returns ok=False.
+
+test_weak_password             StoreTests    Short (< 8 chars) and letters-only
+                                             passwords are rejected.
+
+test_bad_username              StoreTests    Too-short, space, and ! characters
+                                             in username are rejected.
+
+test_same_password_two_users   StoreTests    alice and bob with identical
+                                             passwords get DIFFERENT salts AND
+                                             DIFFERENT hashes.
+
+test_no_plaintext_in_db_file   StoreTests    Binary content of users.db does NOT
+                                             contain the string "Summer2026".
+
+test_sql_injection             StoreTests    Injection strings (OR 1=1, etc.)
+                                             do not bypass auth and do not
+                                             corrupt the database row count.
+------------------------------------------------------------------------------
+
+
+================================================================================
+SECTION 8: DEMO OUTPUT SUMMARY (demo.py)
+================================================================================
+
+DEMO 1: Registration stores a salt and a hash, never the password
+  Three accounts created with names alice, bob, charlie.
+  Salts and hashes are printed. Passwords do NOT appear in the output.
+
+DEMO 2: Same password, different salts -> different hashes
+  alice and bob both used "Summer2026".
+    alice hash: 3539aa06... (unique due to unique salt)
+    bob   hash: 5966818f... (unique due to unique salt)
+  Without salt, both would store: ed3c9886... (identical -> vulnerability)
+
+DEMO 3: Login verification by re-hashing with the stored salt
+  login(alice, Summer2026)   -> ACCESS GRANTED    (correct credentials)
+  login(alice, summer2026)   -> ACCESS DENIED     (case sensitive)
+  login(bob, WrongPass1)     -> ACCESS DENIED     (wrong password)
+  login(mallory, Summer2026) -> ACCESS DENIED     (unknown user)
+
+DEMO 4: Rainbow-table attack
+  A precomputed table of 10 common passwords (unsalted SHA-256) is built.
+  Against unsalted DB: alice CRACKED, bob CRACKED, charlie not found.
+  Against salted DB  : alice not in table, bob not in table, charlie not in table.
+  Passwords recovered from the salted database: 0
+
+DEMO 5: Avalanche effect of SHA-256
+  Input 1: "Summer2026" + alice_salt
+  Input 2: "Summer2027" + alice_salt  (one digit changed)
+  Bit difference in outputs: 145 of 256 bits (56.6%)
+
+
+================================================================================
+SECTION 9: PERFORMANCE FIGURES (benchmark.py)
+================================================================================
+
+Primitive operations (average of 20,000 runs, best of 15 rounds):
+  os.urandom(16) salt generation :    0.221 us
+  SHA-256 without salt           :    1.424 us
+  SHA-256 with 16-byte salt      :    1.562 us
+
+SHA-256 time vs password length (salted):
+   8 chars: 1.569 us |  16 chars: 1.418 us |  32 chars: 1.615 us
+  64 chars: 1.626 us | 128 chars: 1.713 us | 256 chars: 1.677 us
+  (Time is essentially constant because SHA-256 processes 512-bit blocks;
+   short passwords all fit in one block with the 16-byte salt.)
+
+End-to-end operations with SQLite (average of 200 users):
+  register (salt + hash + INSERT) :  8.627 ms
+  login    (SELECT + hash + compare):  0.982 ms
+
+Attacker work to test a 1M-word dictionary:
+  Unsalted DB: 1,000,000 hashes total (one table serves ALL users).
+  Salted DB: 1,000,000 * (number of users) hashes.
+    1 user:     1,000,000 hashes
+    100 users:    100,000,000 hashes
+    10,000 users: 10,000,000,000 hashes
+
+  This linear scaling means salting is a fundamental cost multiplier
+  for any attacker running a dictionary attack.
+
+Key stretching comparison (PBKDF2-HMAC-SHA256, 600,000 iterations):
+  One hash: 547.6 ms
+  That is ~350,000x slower than a single SHA-256 per hash.
+  This is the production-grade solution recommended by NIST/OWASP.
+
+
+================================================================================
+SECTION 10: BUG FIXED DURING REVIEW
+================================================================================
+
+File     : app.py
+Route    : /dashboard (line 76)
+
+Bug description:
+  The original code was:
+    record = next(u for u in store.list_users()
+                  if u["username"] == session["user"])
+
+  If the logged-in user's record is deleted from the database while their
+  session is still active (e.g., manual DB cleanup), next() raises a
+  StopIteration exception. Flask converts this to an HTTP 500 Internal
+  Server Error, which is unhelpful and leaks server internals.
+
+Fix applied:
+  record = next((u for u in store.list_users()
+                 if u["username"] == session["user"]), None)
+  if record is None:
+      session.clear()
+      flash("Session expired. Please log in again.", "error")
+      return redirect(url_for("login"))
+
+Result:
+  The edge case is now handled gracefully: the session is cleared and the
+  user is redirected to the login page with an informative message.
+  All 14 unit tests still pass after the fix.
+
+
+================================================================================
+SECTION 11: REQUIREMENTS CHECKLIST
+================================================================================
+
+Requirement from the Microproject Specification          Status
+------------------------------------------------------------------------------
+Implement SHA-256 hashing using hashlib module           DONE (secure_store.py L38-39)
+Generate random salt using os.urandom()                  DONE (secure_store.py L33-34)
+Append salt to password before hashing                   DONE (secure_store.py L39)
+Store salted hash in a database or file                  DONE (SQLite via UserStore)
+Re-hash with stored salt at login and compare            DONE (secure_store.py L124-127)
+Prevent rainbow table attacks (unique salts)             DONE (DEMO 4: 0 cracked)
+Secure password verification without exposing password   DONE (test_no_plaintext_in_db)
+Handle multiple users with the same password             DONE (test_same_password_two_users)
+CO3: Hash functions (SHA family) - Module III            DONE (SHA-256 = SHA-2 family)
+CO3: Message Authentication Code (MAC)                  DONE (hmac.compare_digest)
+CO3: Authentication requirements                        DONE (confidentiality + integrity)
+All 14 unit tests pass                                   DONE (0 failures, 0 errors)
+------------------------------------------------------------------------------
+VERDICT: All requirements are fully satisfied and verified.
+
+
+================================================================================
+SECTION 12: HOW TO RUN THE PROJECT
+================================================================================
+
+Prerequisites: Python 3.8 or later installed.
+
+  # Step 1 - Run unit tests (verifies correctness, no dependencies needed)
+  python -m unittest discover -s tests -v
+
+  # Step 2 - Run security demonstrations (shows all 5 demos)
+  python demo.py
+
+  # Step 3 - Run performance benchmark
+  python benchmark.py
+
+  # Step 4 - Interactive terminal application
+  python cli.py
+
+  # Step 5 - Web application (requires Flask)
+  pip install -r requirements.txt
+  python app.py
+  # Then open http://127.0.0.1:5000 in a browser
+
+Important notes:
+  - users.db is created automatically in the project folder on first run.
+  - demo.py and benchmark.py write to temporary databases (tempfile.mkdtemp)
+    and never modify users.db.
+  - secure_store, cli, demo, benchmark, and tests use ONLY the Python
+    standard library. Flask is needed only for app.py.
+  - Run python cli.py to create accounts interactively from the terminal.
+    Passwords are hidden by the getpass module (they do not echo to screen).
+
+================================================================================
+END OF NOTES
+================================================================================

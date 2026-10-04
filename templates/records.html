@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block title %}Stored records{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>What the database contains</h1>
+  <p>This demonstration page shows the <code>users</code> table exactly as an
+     attacker would see it after a breach. There is no password column.</p>
+  {% if users %}
+  <div class="scroll">
+    <table>
+      <thead><tr><th>#</th><th>Username</th><th>Salt</th><th>Salted SHA-256 hash</th></tr></thead>
+      <tbody>
+      {% for u in users %}
+        <tr><td>{{ u.id }}</td><td>{{ u.username }}</td>
+            <td><code>{{ u.salt }}</code></td><td><code>{{ u.password_hash }}</code></td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+    <p class="muted">No users registered yet.</p>
+  {% endif %}
+</section>
+{% endblock %}
